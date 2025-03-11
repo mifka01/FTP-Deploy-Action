@@ -4742,7 +4742,7 @@ function deploy(args, logger, timings) {
         timings.start("total");
         // header
         logger.all(`----------------------------------------------------------------`);
-        logger.all(`🚀 Thanks for using ftp-deploy. Let's deploy some stuff!   `);
+        logger.all(`🚀 Thanks for using mifka01/ftp-deploy. Let's deploy some stuff!   `);
         logger.all(`----------------------------------------------------------------`);
         logger.all(`If you found this project helpful, please support it`);
         logger.all(`by giving it a ⭐ on Github --> https://github.com/SamKirkland/FTP-Deploy-Action`);
@@ -5089,7 +5089,7 @@ class FTPSyncProvider {
     createFolder(folderPath) {
         var _a;
         return __awaiter(this, void 0, void 0, function* () {
-            // this.logger.all(`creating folder "${folderPath + "/"}"`);
+            this.logger.all(`creating folder "${folderPath + "/"}"`);
             if (this.dryRun === true) {
                 return;
             }
@@ -5138,9 +5138,9 @@ class FTPSyncProvider {
     }
     uploadFile(filePath, type = "upload") {
         return __awaiter(this, void 0, void 0, function* () {
-            // const typePresent = type === "upload" ? "uploading" : "replacing";
+            const typePresent = type === "upload" ? "uploading" : "replacing";
             const typePast = type === "upload" ? "uploaded" : "replaced";
-            // this.logger.all(`${typePresent} "${filePath}"`);
+            this.logger.all(`${typePresent} "${filePath}"`);
             if (this.dryRun === false) {
                 yield (0, utilities_1.retryRequest)(this.logger, () => __awaiter(this, void 0, void 0, function* () { return yield this.client.uploadFrom(this.localPath + filePath, filePath); }));
             }
@@ -5293,7 +5293,7 @@ class Threading {
     createWorkers() {
         return __awaiter(this, void 0, void 0, function* () {
             for (let i = 0; i < this.numWorkers; i++) {
-                const worker = new worker_threads_1.Worker('./src/worker.js', { workerData: { path: './worker.ts', args: this.args } });
+                const worker = new worker_threads_1.Worker('./worker.js', { workerData: { path: './worker.ts', args: this.args } });
                 worker.on('message', (msg) => {
                     if (msg.type === 'taskCompleted') {
                         this.idleWorkers.push(worker);
