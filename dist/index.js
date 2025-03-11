@@ -5293,7 +5293,7 @@ class Threading {
     createWorkers() {
         return __awaiter(this, void 0, void 0, function* () {
             for (let i = 0; i < this.numWorkers; i++) {
-                const worker = new worker_threads_1.Worker('./worker.js', { workerData: { path: './worker.ts', args: this.args } });
+                const worker = new worker_threads_1.Worker('./dist/worker.js', { workerData: { args: this.args } });
                 worker.on('message', (msg) => {
                     if (msg.type === 'taskCompleted') {
                         this.idleWorkers.push(worker);
