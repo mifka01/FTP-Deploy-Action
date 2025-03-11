@@ -2995,7 +2995,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 
 /***/ }),
 
-/***/ 9946:
+/***/ 6525:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
 "use strict";
@@ -3127,7 +3127,7 @@ exports.HashDiff = HashDiff;
 
 /***/ }),
 
-/***/ 232:
+/***/ 2360:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
 "use strict";
@@ -3168,16 +3168,17 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.deploy = exports.getServerFiles = void 0;
+exports.deploy = exports.getServerFiles = exports.ensureFreshConnection = exports.connect = void 0;
 const ftp = __importStar(__nccwpck_require__(7957));
 const fs_1 = __importDefault(__nccwpck_require__(7147));
-const types_1 = __nccwpck_require__(6703);
-const HashDiff_1 = __nccwpck_require__(9946);
-const utilities_1 = __nccwpck_require__(4389);
+const types_1 = __nccwpck_require__(6930);
+const HashDiff_1 = __nccwpck_require__(6525);
+const utilities_1 = __nccwpck_require__(1356);
 const pretty_bytes_1 = __importDefault(__nccwpck_require__(5168));
-const errorHandling_1 = __nccwpck_require__(3678);
-const syncProvider_1 = __nccwpck_require__(1904);
-const localFiles_1 = __nccwpck_require__(8660);
+const errorHandling_1 = __nccwpck_require__(9028);
+const syncProvider_1 = __nccwpck_require__(9418);
+const localFiles_1 = __nccwpck_require__(6941);
+const threading_1 = __nccwpck_require__(7590);
 function downloadFileList(client, logger, path) {
     return __awaiter(this, void 0, void 0, function* () {
         // note: originally this was using a writable stream instead of a buffer file
@@ -3219,16 +3220,36 @@ function connect(client, args, logger) {
             });
         }
         catch (error) {
-            logger.all("Failed to connect, are you sure your server works via FTP or FTPS? Users sometimes get this error when the server only supports SFTP.");
+            logger === null || logger === void 0 ? void 0 : logger.all("Failed to connect, are you sure your server works via FTP or FTPS? Users sometimes get this error when the server only supports SFTP.");
             throw error;
         }
         if (args["log-level"] === "verbose") {
             client.trackProgress(info => {
-                logger.verbose(`${info.type} progress for "${info.name}". Progress: ${info.bytes} bytes of ${info.bytesOverall} bytes`);
+                logger === null || logger === void 0 ? void 0 : logger.verbose(`${info.type} progress for "${info.name}". Progress: ${info.bytes} bytes of ${info.bytesOverall} bytes`);
             });
         }
     });
 }
+exports.connect = connect;
+function ensureFreshConnection(client, args, timings, logger, lastConnectionTime) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const currentTime = Date.now();
+        if (currentTime - lastConnectionTime >= args["reconnect-timeout"] * 1000) {
+            logger.verbose("Client connection interval expired, refreshing FTP connection");
+            if (!client.closed) {
+                logger.verbose("Closing existing FTP connection for refresh");
+                client.close();
+            }
+            timings.start("connecting");
+            yield connect(client, args, logger);
+            timings.stop("connecting");
+            logger.verbose("FTP connection refreshed at", new Date().toLocaleString());
+            return Date.now();
+        }
+        return lastConnectionTime;
+    });
+}
+exports.ensureFreshConnection = ensureFreshConnection;
 function getServerFiles(client, logger, timings, args) {
     return __awaiter(this, void 0, void 0, function* () {
         try {
@@ -3284,16 +3305,12 @@ function deploy(args, logger, timings) {
         timings.stop("hash");
         createLocalState(localFiles, logger, args);
         const client = new ftp.Client(args.timeout);
-        global.reconnect = function () {
-            return __awaiter(this, void 0, void 0, function* () {
-                timings.start("connecting");
-                yield connect(client, args, logger);
-                timings.stop("connecting");
-            });
-        };
+        const lastConnectionTimeRef = { time: 0 };
         let totalBytesUploaded = 0;
         try {
-            yield global.reconnect();
+            timings.start("connecting");
+            yield connect(client, args, logger);
+            timings.stop("connecting");
             const serverFiles = yield getServerFiles(client, logger, timings, args);
             timings.start("logging");
             const diffTool = new HashDiff_1.HashDiff();
@@ -3304,19 +3321,19 @@ function deploy(args, logger, timings) {
             logger.standard(`Calculating differences between client & server`);
             logger.standard(`----------------------------------------------------------------`);
             const diffs = diffTool.getDiffs(localFiles, serverFiles);
-            diffs.upload.filter((itemUpload) => itemUpload.type === "folder").map((itemUpload) => {
-                logger.standard(`📁 Create: ${itemUpload.name}`);
+            diffs.upload.filter((item) => item.type === "folder").map((item) => {
+                logger.standard(`📁 Create: ${item.name}`);
             });
-            diffs.upload.filter((itemUpload) => itemUpload.type === "file").map((itemUpload) => {
-                logger.standard(`📄 Upload: ${itemUpload.name}`);
+            diffs.upload.filter((item) => item.type === "file").map((item) => {
+                logger.standard(`📄 Upload: ${item.name}`);
             });
             diffs.replace.map((itemReplace) => {
                 logger.standard(`🔁 File replace: ${itemReplace.name}`);
             });
-            diffs.delete.filter((itemUpload) => itemUpload.type === "file").map((itemDelete) => {
+            diffs.delete.filter((item) => item.type === "file").map((itemDelete) => {
                 logger.standard(`📄 Delete: ${itemDelete.name}    `);
             });
-            diffs.delete.filter((itemUpload) => itemUpload.type === "folder").map((itemDelete) => {
+            diffs.delete.filter((item) => item.type === "folder").map((itemDelete) => {
                 logger.standard(`📁 Delete: ${itemDelete.name}    `);
             });
             diffs.same.map((itemSame) => {
@@ -3326,13 +3343,35 @@ function deploy(args, logger, timings) {
             });
             timings.stop("logging");
             totalBytesUploaded = diffs.sizeUpload + diffs.sizeReplace;
-            timings.start("upload");
-            try {
-                const syncProvider = new syncProvider_1.FTPSyncProvider(client, logger, timings, args["local-dir"], args["server-dir"], args["state-name"], args["dry-run"]);
-                yield syncProvider.syncLocalToServer(diffs);
+            const numWorkers = args["number-of-connections"] - 1;
+            if (numWorkers > 0) {
+                const threading = new threading_1.Threading(numWorkers, args);
+                timings.start("upload");
+                try {
+                    timings.start("connecting");
+                    yield threading.start();
+                    timings.stop("connecting");
+                    const syncProvider = new syncProvider_1.FTPSyncProvider(client, logger, timings, args["local-dir"], args["server-dir"], args["state-name"], args["dry-run"], () => __awaiter(this, void 0, void 0, function* () {
+                        lastConnectionTimeRef.time = yield ensureFreshConnection(client, args, timings, logger, lastConnectionTimeRef.time);
+                    }));
+                    yield syncProvider.syncLocalToServerMultiThread(diffs, threading);
+                }
+                finally {
+                    timings.stop("upload");
+                    yield threading.stop();
+                }
             }
-            finally {
-                timings.stop("upload");
+            else {
+                timings.start("upload");
+                try {
+                    const syncProvider = new syncProvider_1.FTPSyncProvider(client, logger, timings, args["local-dir"], args["server-dir"], args["state-name"], args["dry-run"], () => __awaiter(this, void 0, void 0, function* () {
+                        lastConnectionTimeRef.time = yield ensureFreshConnection(client, args, timings, logger, lastConnectionTimeRef.time);
+                    }));
+                    yield syncProvider.syncLocalToServer(diffs);
+                }
+                finally {
+                    timings.stop("upload");
+                }
             }
         }
         catch (error) {
@@ -3361,14 +3400,14 @@ exports.deploy = deploy;
 
 /***/ }),
 
-/***/ 3678:
+/***/ 9028:
 /***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.prettyError = void 0;
-const types_1 = __nccwpck_require__(6703);
+const types_1 = __nccwpck_require__(6930);
 function logOriginalError(logger, error) {
     logger.all();
     logger.all(`----------------------------------------------------------------`);
@@ -3422,7 +3461,7 @@ exports.prettyError = prettyError;
 
 /***/ }),
 
-/***/ 8660:
+/***/ 6941:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
 "use strict";
@@ -3442,9 +3481,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.getLocalFiles = void 0;
 const readdir_enhanced_1 = __importDefault(__nccwpck_require__(8811));
-const types_1 = __nccwpck_require__(6703);
-const HashDiff_1 = __nccwpck_require__(9946);
-const utilities_1 = __nccwpck_require__(4389);
+const types_1 = __nccwpck_require__(6930);
+const HashDiff_1 = __nccwpck_require__(6525);
+const utilities_1 = __nccwpck_require__(1356);
 function getLocalFiles(args) {
     return __awaiter(this, void 0, void 0, function* () {
         const files = yield readdir_enhanced_1.default.async(args["local-dir"], { deep: true, stats: true, sep: "/", filter: (stat) => (0, utilities_1.applyExcludeFilter)(stat, args.exclude) });
@@ -3484,7 +3523,7 @@ exports.getLocalFiles = getLocalFiles;
 
 /***/ }),
 
-/***/ 8347:
+/***/ 9988:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
 "use strict";
@@ -3500,8 +3539,8 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.deploy = exports.excludeDefaults = void 0;
-const deploy_1 = __nccwpck_require__(232);
-const utilities_1 = __nccwpck_require__(4389);
+const deploy_1 = __nccwpck_require__(2360);
+const utilities_1 = __nccwpck_require__(1356);
 /**
  * Default excludes, ignores all git files and the node_modules folder
  * **\/.git* ignores all FILES that start with .git(in any folder or sub-folder)
@@ -3526,7 +3565,7 @@ exports.deploy = deploy;
 
 /***/ }),
 
-/***/ 1904:
+/***/ 9418:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
 "use strict";
@@ -3546,8 +3585,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.FTPSyncProvider = exports.ensureDir = void 0;
 const pretty_bytes_1 = __importDefault(__nccwpck_require__(5168));
-const types_1 = __nccwpck_require__(6703);
-const utilities_1 = __nccwpck_require__(4389);
+const types_1 = __nccwpck_require__(6930);
+const utilities_1 = __nccwpck_require__(1356);
 function ensureDir(client, logger, timings, folder) {
     return __awaiter(this, void 0, void 0, function* () {
         timings.start("changingDir");
@@ -3559,7 +3598,7 @@ function ensureDir(client, logger, timings, folder) {
 }
 exports.ensureDir = ensureDir;
 class FTPSyncProvider {
-    constructor(client, logger, timings, localPath, serverPath, stateName, dryRun) {
+    constructor(client, logger, timings, localPath, serverPath, stateName, dryRun, reconnectCallback) {
         this.client = client;
         this.logger = logger;
         this.timings = timings;
@@ -3567,6 +3606,7 @@ class FTPSyncProvider {
         this.serverPath = serverPath;
         this.stateName = stateName;
         this.dryRun = dryRun;
+        this.reconnectCallback = reconnectCallback;
     }
     /**
      * Converts a file path (ex: "folder/otherfolder/file.txt") to an array of folder and a file path
@@ -3601,7 +3641,7 @@ class FTPSyncProvider {
     createFolder(folderPath) {
         var _a;
         return __awaiter(this, void 0, void 0, function* () {
-            this.logger.all(`creating folder "${folderPath + "/"}"`);
+            // this.logger.all(`creating folder "${folderPath + "/"}"`);
             if (this.dryRun === true) {
                 return;
             }
@@ -3650,42 +3690,118 @@ class FTPSyncProvider {
     }
     uploadFile(filePath, type = "upload") {
         return __awaiter(this, void 0, void 0, function* () {
-            const typePresent = type === "upload" ? "uploading" : "replacing";
+            // const typePresent = type === "upload" ? "uploading" : "replacing";
             const typePast = type === "upload" ? "uploaded" : "replaced";
-            this.logger.all(`${typePresent} "${filePath}"`);
+            // this.logger.all(`${typePresent} "${filePath}"`);
             if (this.dryRun === false) {
                 yield (0, utilities_1.retryRequest)(this.logger, () => __awaiter(this, void 0, void 0, function* () { return yield this.client.uploadFrom(this.localPath + filePath, filePath); }));
             }
             this.logger.verbose(`  file ${typePast}`);
         });
     }
+    syncRecordToServer(record, action) {
+        return __awaiter(this, void 0, void 0, function* () {
+            if (this.reconnectCallback) {
+                yield this.reconnectCallback();
+            }
+            const actions = {
+                upload: () => __awaiter(this, void 0, void 0, function* () {
+                    if (record.type === 'folder') {
+                        yield this.createFolder(record.name);
+                    }
+                    else {
+                        yield this.uploadFile(record.name, "upload");
+                    }
+                }),
+                delete: () => __awaiter(this, void 0, void 0, function* () {
+                    if (record.type === 'folder') {
+                        yield this.removeFolder(record.name);
+                    }
+                    else {
+                        yield this.removeFile(record.name);
+                    }
+                }),
+                replace: () => __awaiter(this, void 0, void 0, function* () {
+                    yield this.uploadFile(record.name, "replace");
+                })
+            };
+            if (actions[action]) {
+                yield actions[action]();
+            }
+        });
+    }
+    printSyncHeader(diffs) {
+        const totalCount = diffs.delete.length + diffs.upload.length + diffs.replace.length;
+        this.logger.all(`----------------------------------------------------------------`);
+        this.logger.all(`Making changes to ${totalCount} ${(0, utilities_1.pluralize)(totalCount, "file/folder", "files/folders")} to sync server state`);
+        this.logger.all(`Uploading: ${(0, pretty_bytes_1.default)(diffs.sizeUpload)} -- Deleting: ${(0, pretty_bytes_1.default)(diffs.sizeDelete)} -- Replacing: ${(0, pretty_bytes_1.default)(diffs.sizeReplace)}`);
+        this.logger.all(`----------------------------------------------------------------`);
+    }
+    printSyncFooter() {
+        this.logger.all(`----------------------------------------------------------------`);
+        this.logger.all(`🎉 Sync complete. Saving current server state to "${this.serverPath + this.stateName}"`);
+    }
+    syncLocalToServerMultiThread(diffs, threading) {
+        return __awaiter(this, void 0, void 0, function* () {
+            this.printSyncHeader(diffs);
+            const uploadFiles = diffs.upload.filter(item => item.type === "file" && item.name !== this.stateName);
+            const topLevelFiles = uploadFiles.filter(item => item.name.split('/').length == 1);
+            const allFolders = diffs.upload.filter(item => item.type === "folder");
+            const replaceFiles = diffs.replace.filter(item => item.type === 'file' && item.name !== this.stateName);
+            const deleteFiles = diffs.delete.filter(item => item.type === 'file');
+            const deleteFolders = diffs.delete.filter(item => item.type === "folder");
+            threading.addTasks(topLevelFiles, 'upload');
+            const filesByFolder = new Map();
+            uploadFiles.forEach(item => {
+                var _a;
+                const folderName = item.name.split('/').slice(0, -1).join('/');
+                if (!filesByFolder.has(folderName)) {
+                    filesByFolder.set(folderName, []);
+                }
+                (_a = filesByFolder.get(folderName)) === null || _a === void 0 ? void 0 : _a.push(item);
+            });
+            for (const folder of allFolders) {
+                yield this.syncRecordToServer(folder, 'upload');
+                const filesInFolder = filesByFolder.get(folder.name) || [];
+                if (filesInFolder.length > 0) {
+                    threading.addTasks(filesInFolder, 'upload');
+                }
+            }
+            for (const folder of deleteFolders) {
+                yield this.syncRecordToServer(folder, 'delete');
+            }
+            threading.addTasks(replaceFiles, 'replace');
+            threading.addTasks(deleteFiles, 'delete');
+            yield threading.waitForAllTasks();
+            this.printSyncFooter();
+            if (this.dryRun === false) {
+                yield (0, utilities_1.retryRequest)(this.logger, () => __awaiter(this, void 0, void 0, function* () { return yield this.client.uploadFrom(this.localPath + this.stateName, this.stateName); }));
+            }
+        });
+    }
     syncLocalToServer(diffs) {
         return __awaiter(this, void 0, void 0, function* () {
-            const totalCount = diffs.delete.length + diffs.upload.length + diffs.replace.length;
-            this.logger.all(`----------------------------------------------------------------`);
-            this.logger.all(`Making changes to ${totalCount} ${(0, utilities_1.pluralize)(totalCount, "file/folder", "files/folders")} to sync server state`);
-            this.logger.all(`Uploading: ${(0, pretty_bytes_1.default)(diffs.sizeUpload)} -- Deleting: ${(0, pretty_bytes_1.default)(diffs.sizeDelete)} -- Replacing: ${(0, pretty_bytes_1.default)(diffs.sizeReplace)}`);
-            this.logger.all(`----------------------------------------------------------------`);
+            this.printSyncHeader(diffs);
             // create new folders
-            for (const file of diffs.upload.filter(item => item.type === "folder")) {
-                yield this.createFolder(file.name);
+            for (const folder of diffs.upload.filter(item => item.type === "folder")) {
+                yield this.syncRecordToServer(folder, 'upload');
             }
             // upload new files
             for (const file of diffs.upload.filter(item => item.type === "file").filter(item => item.name !== this.stateName)) {
-                yield this.uploadFile(file.name, "upload");
+                yield this.syncRecordToServer(file, 'upload');
             }
             // replace new files
             for (const file of diffs.replace.filter(item => item.type === "file").filter(item => item.name !== this.stateName)) {
                 // note: FTP will replace old files with new files. We run replacements after uploads to limit downtime
-                yield this.uploadFile(file.name, "replace");
+                yield this.syncRecordToServer(file, 'replace');
             }
             // delete old files
             for (const file of diffs.delete.filter(item => item.type === "file")) {
-                yield this.removeFile(file.name);
+                yield this.syncRecordToServer(file, 'delete');
             }
             // delete old folders
-            for (const file of diffs.delete.filter(item => item.type === "folder")) {
-                yield this.removeFolder(file.name);
+            for (const folder of diffs.delete.filter(item => item.type === "folder")) {
+                yield this.syncRecordToServer(folder, 'delete');
             }
             this.logger.all(`----------------------------------------------------------------`);
             this.logger.all(`🎉 Sync complete. Saving current server state to "${this.serverPath + this.stateName}"`);
@@ -3700,7 +3816,118 @@ exports.FTPSyncProvider = FTPSyncProvider;
 
 /***/ }),
 
-/***/ 6703:
+/***/ 7590:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.Threading = void 0;
+const worker_threads_1 = __nccwpck_require__(1267);
+class Threading {
+    constructor(numWorkers, args) {
+        this.numWorkers = numWorkers;
+        this.args = args;
+        this.taskQueue = [];
+        this.workers = [];
+        this.idleWorkers = [];
+        this.activeTasks = 0;
+    }
+    createWorkers() {
+        return __awaiter(this, void 0, void 0, function* () {
+            for (let i = 0; i < this.numWorkers; i++) {
+                const worker = new worker_threads_1.Worker('./src/worker.js', { workerData: { path: './worker.ts', args: this.args } });
+                worker.on('message', (msg) => {
+                    if (msg.type === 'taskCompleted') {
+                        this.idleWorkers.push(worker);
+                        this.activeTasks--;
+                        this.processNextTask();
+                    }
+                    if (msg.type === 'taskFailed') {
+                        // TODO!!! this should happen only if task fails with error 500 OOPS: vsf_sysutil_bind
+                        // meaning that the worker cant get open port from server to connect or something like that.
+                        // task should be requeued, but the worker probably shouldn't be terminated in other error cases
+                        this.activeTasks--;
+                        if (msg.result.task) {
+                            const task = msg.result.task;
+                            this.taskQueue.push(task);
+                            this.activeTasks++;
+                        }
+                        console.log('Task failed', msg.result.error);
+                        console.log(msg.result.task);
+                        worker.postMessage('exit');
+                        worker.terminate();
+                    }
+                });
+                worker.on('error', (error) => {
+                    throw error;
+                });
+                worker.on('exit', (code) => {
+                    if (code !== 0) {
+                        console.log(`Worker stopped with exit code ${code}`);
+                    }
+                });
+                this.workers.push(worker);
+                this.idleWorkers.push(worker);
+            }
+        });
+    }
+    addTasks(tasks, action) {
+        tasks.forEach(task => {
+            this.taskQueue.push({ action, record: task });
+        });
+        this.activeTasks += tasks.length;
+        this.processNextTask();
+    }
+    processNextTask() {
+        if (this.taskQueue.length > 0 && this.idleWorkers.length > 0) {
+            const task = this.taskQueue.shift();
+            if (!task) {
+                return;
+            }
+            const worker = this.idleWorkers.shift();
+            worker === null || worker === void 0 ? void 0 : worker.postMessage({ type: 'newTask', task });
+        }
+    }
+    waitForAllTasks() {
+        return __awaiter(this, void 0, void 0, function* () {
+            while (this.activeTasks > 0 || this.taskQueue.length > 0) {
+                yield new Promise(resolve => setTimeout(resolve, 100));
+            }
+        });
+    }
+    start() {
+        return __awaiter(this, void 0, void 0, function* () {
+            yield this.createWorkers();
+            this.processNextTask();
+        });
+    }
+    stop() {
+        return __awaiter(this, void 0, void 0, function* () {
+            for (const worker of this.workers) {
+                worker.postMessage('exit');
+                yield worker.terminate();
+            }
+            ;
+            this.workers = [];
+        });
+    }
+}
+exports.Threading = Threading;
+
+
+/***/ }),
+
+/***/ 6930:
 /***/ ((__unused_webpack_module, exports) => {
 
 "use strict";
@@ -3777,7 +4004,7 @@ var ErrorCode;
 
 /***/ }),
 
-/***/ 4389:
+/***/ 1356:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
 "use strict";
@@ -3797,8 +4024,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.applyExcludeFilter = exports.getDefaultSettings = exports.Timer = exports.Timings = exports.retryRequest = exports.formatNumber = exports.pluralize = exports.Logger = void 0;
 const pretty_ms_1 = __importDefault(__nccwpck_require__(1127));
-const module_1 = __nccwpck_require__(8347);
-const types_1 = __nccwpck_require__(6703);
+const module_1 = __nccwpck_require__(9988);
+const types_1 = __nccwpck_require__(6930);
 const multimatch_1 = __importDefault(__nccwpck_require__(8222));
 class Logger {
     constructor(level) {
@@ -3920,7 +4147,7 @@ class Timer {
 }
 exports.Timer = Timer;
 function getDefaultSettings(withoutDefaults) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o;
     if (withoutDefaults["local-dir"] !== undefined) {
         if (!withoutDefaults["local-dir"].endsWith("/")) {
             throw new Error("local-dir should be a folder (must end with /)");
@@ -3946,6 +4173,8 @@ function getDefaultSettings(withoutDefaults) {
         "log-level": (_j = withoutDefaults["log-level"]) !== null && _j !== void 0 ? _j : "standard",
         "security": (_k = withoutDefaults.security) !== null && _k !== void 0 ? _k : "loose",
         "timeout": (_l = withoutDefaults.timeout) !== null && _l !== void 0 ? _l : 30000,
+        "number-of-connections": (_m = withoutDefaults["number-of-connections"]) !== null && _m !== void 0 ? _m : 1,
+        "reconnect-timeout": (_o = withoutDefaults["reconnect-timeout"]) !== null && _o !== void 0 ? _o : 60
     };
 }
 exports.getDefaultSettings = getDefaultSettings;
@@ -9059,7 +9288,7 @@ var __importStar = (this && this.__importStar) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 const core = __importStar(__nccwpck_require__(2186));
-const ftp_deploy_1 = __nccwpck_require__(8347);
+const ftp_deploy_1 = __nccwpck_require__(9988);
 const parse_1 = __nccwpck_require__(6089);
 async function runDeployment() {
     try {
@@ -9077,7 +9306,9 @@ async function runDeployment() {
             "exclude": (0, parse_1.optionalStringArray)("exclude", core.getMultilineInput("exclude")),
             "log-level": (0, parse_1.optionalLogLevel)("log-level", core.getInput("log-level")),
             "security": (0, parse_1.optionalSecurity)("security", core.getInput("security")),
-            "timeout": (0, parse_1.optionalInt)("timeout", core.getInput("timeout"))
+            "timeout": (0, parse_1.optionalInt)("timeout", core.getInput("timeout")),
+            "number-of-connections": (0, parse_1.optionalInt)("number-of-connections", core.getInput("number-of-connections")),
+            "reconnect-timeout": (0, parse_1.optionalInt)("reconnect-timeout", core.getInput("reconnect-timeout")),
         };
         await (0, ftp_deploy_1.deploy)(args);
     }
@@ -9284,6 +9515,14 @@ module.exports = require("tls");
 
 "use strict";
 module.exports = require("util");
+
+/***/ }),
+
+/***/ 1267:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("worker_threads");
 
 /***/ })
 
